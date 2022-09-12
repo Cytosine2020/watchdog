@@ -1,27 +1,52 @@
 #!/bin/python3
 
 import toml
+import json
 import sys
 import signal
 import time
 import subprocess
 import functools
 
-def run_cmd(cmd):
-  return subprocess.run(['bash', '-c', cmd], capture_output=True)
+def run_cmd(type, config, variables={}):
+  cmd = config['cmd']
+  
+  if 'args' in config:
+    args = ''
+    for name in config['args']:
+      if name in variables:
+        args += '{}={}\n'.format(name, variables[name])
+      else:
+        args += '{}=\n'.format(name)
+        print('[WARNING ] {} command "{}" argument "{}" not set'
+            .format(type, cmd, name))
+    cmd = args + cmd
 
-def exec_actions(type, actions):
-  for action in actions:
-    cmd = action['cmd']
+  result = subprocess.run(['bash', '-c', cmd], capture_output=True)
 
-    result = run_cmd(cmd)
-    if result.returncode != 0:
-      print('[WARNING ] {} action "{}" failed with return code {}: {}'
-          .format(type, cmd, result.returncode, result.stdout.decode()))
+  if result.returncode == 0:
+    if 'ret' in config:      
+      try:
+        ret = json.loads(result.stdout.decode())
+      except Exception as e: 
+        print('[ERROR   ] internal exception: {}'.format(e))
+        exit(1)
+      
+      for name in config['ret']:
+        if name in ret:
+          variables[name] = ret[name]
+        else:
+          print('[WARNING ] {} command "{}" does not output variable "{}"'
+              .format(type, cmd, name))
+  else:
+    print('[WARNING ] {} command "{}" failed with return code {}: {}'
+        .format(type, cmd, result.returncode, result.stdout.decode()))
+
+  return result.returncode == 0
 
 def watchdog(config):
   interval = config['check']['interval']
-  check_cmd = config['check']['cmd']
+  check = config['check']
 
   def get_actions(name):
     return config[name] if name in config else []
@@ -35,24 +60,28 @@ def watchdog(config):
 
   last_state = True
 
-  while True:
-    result = run_cmd(check_cmd)
-    if result.returncode != 0:
-      print('[WARNING ] check failed with return code {}: {}'
-          .format(result.returncode, result.stdout.decode()))
-      
-      if last_state == True:
-        exec_actions('fall', fall)
-      exec_actions('low', low)
+  for config in low:
+    run_cmd('low', config)
 
-      last_state = False
-    else:
+  while True:
+    if run_cmd('check', check):      
       if last_state == False:
-        print('[INFO    ] status recovered')
-        exec_actions('rise', rise)
-      exec_actions('high', high)
+        for config in rise:
+          run_cmd('rise', config)
+      
+      for config in high:
+        run_cmd('high', config)
 
       last_state = True
+    else:
+      if last_state == True:
+        for config in fall:
+          run_cmd('fall', config)
+
+      for config in low:
+        run_cmd('low', config)
+
+      last_state = False
 
     time.sleep(interval)
 
