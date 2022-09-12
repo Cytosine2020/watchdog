@@ -60,9 +60,6 @@ def watchdog(config):
 
   last_state = True
 
-  for config in low:
-    run_cmd('low', config)
-
   while True:
     if run_cmd('check', check):      
       if last_state == False:
